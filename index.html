@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>光と色の三原色シミュレーター (RGB/CMY 合成モード体験)</title>
+<style>
+  /* 共通設定 */
+  :root{font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Hiragino Kaku Gothic ProN', 'Noto Sans JP';}
+  body{margin:0;padding:0;background:#f5f5f5;color:#111; text-align: center;} /* 全体を中央寄せの土台にする */
+
+  /* メインコンテンツのコンテナ (中央寄せ用) */
+  .main-content {
+    max-width: 1262px; /* Stage(930) + Gap(12) + Info(320) = 1262px */
+    margin: 0 auto; /* 中央寄せ */
+    padding: 20px 16px;
+    text-align: left; /* コンテナ内のテキストは左寄せに戻す */
+  }
+
+  /* アプリケーションタイトル */
+  .app-title {
+    padding: 20px;
+    margin-bottom: 0;
+    font-size: 1.8rem;
+    color: #333;
+    background: #e0e0e0;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  }
+
+  /* パネル共通 */
+  .panel{background:#fff;border-radius:8px;padding:12px;box-shadow:0 2px 8px rgba(0,0,0,0.08);}
+  
+  /* 上部操作バー */
+  .topbar{display:flex;gap:12px;align-items:center;margin-bottom:12px}
+  .controls{display:flex;gap:12px;align-items:center}
+  
+  /* カラーパレット */
+  .palette{display:flex;gap:8px;flex-wrap:wrap;max-width:620px}
+  .swatch{width:32px;height:32px;border-radius:4px;border:1px solid #ddd;cursor:pointer; transition: outline-color 0.1s}
+  .swatch.selected{outline:3px solid #444;outline-offset:2px}
+
+  /* ステージと情報パネルのコンテナ */
+  .stage-wrap{display:flex;gap:12px;margin-top:0}
+  
+  /* ステージ (Canvas/SVGの親) - サイズは 930x630 */
+  .stage{
+    width:930px;
+    height:630px;
+    background:#000;
+    border-radius:6px;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    position:relative;
+    overflow: hidden; 
+  }
+  
+  .info{width:320px} /* 情報パネルの幅 */
+  
+  /* ツールチップの修正 */
+  .tooltip{
+    position:fixed;
+    background:#222;
+    color:#fff;
+    padding:6px 8px;
+    border-radius:6px;
+    font-size: 15px; /* サイズを15pxに拡大 */
+    pointer-events:none;
+    transform:translate(0,-140%);
+    white-space:nowrap; 
+    z-index: 1000;
+  }
+  
+  /* CanvasとSVGはStageの領域いっぱいに配置 */
+  .compositeCanvas{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none}
+  svg{width:100%;height:100%;user-select:none;position:relative}
+  .note{font-size:13px;color:#444}
+</style>
+</head>
+<body>
+
+<!-- アプリケーションのタイトル -->
+<h1 class="app-title">光と色の三原色シミュレーター (RGB/CMY 合成モード体験)</h1>
+
+<div class="main-content">
+  <!-- 上部操作バー -->
+  <div class="topbar panel">
+    <div class="controls">
+      <label>背景:
+        <select id="bgSelect">
+          <option value="#000000">黒 (#000000) - スクリーン合成</option>
+          <option value="#ffffff">白 (#ffffff) - 乗算合成</option>
+        </select>
+      </label>
+      <label><input type="checkbox" id="eyeCheck"> スポイトモード</label>
+      <span>選択色: <span id="activeColorBox" style="display:inline-block;width:28px;height:20px;border:1px solid #999;vertical-align:middle;background:transparent"></span></span>
+    </div>
+  </div>
+
+  <!-- メインステージと情報パネル -->
+  <div class="panel stage-wrap">
+    <!-- ステージ (930x630) -->
+    <div class="stage" id="stage" style="background:#000">
+      <!-- Composite canvas: 930x630 -->
+      <canvas id="composite" class="compositeCanvas" width="930" height="630"></canvas>
+      <!-- SVG: viewBox 930x630 -->
+      <svg id="svg" viewBox="0 0 930 630" xmlns="http://www.w3.org/2000/svg" style="position:absolute;left:0;top:0">
+        <!-- interactive (invisible-fill) circles: 半径(r)を150に、位置を再調整 -->
+        <circle id="c1" cx="240" cy="315" r="150" fill="transparent" stroke="#888" stroke-width="1.5"/>
+        <circle id="c2" cx="465" cy="315" r="150" fill="transparent" stroke="#888" stroke-width="1.5"/>
+        <circle id="c3" cx="690" cy="315" r="150" fill="transparent" stroke="#888" stroke-width="1.5"/>
+      </svg>
+      <div id="tooltip" class="tooltip" style="display:none"></div>
+    </div>
+    
+    <!-- 情報パネル -->
+    <div class="info panel">
+      <h3>カラーパレット</h3>
+      <div class="palette" id="palette"></div>
+      <p class="note" id="compositeModeNote">現在の合成モード：**スクリーン**（Canvasでは加法合成<span style="font-style:italic">lighter</span>を使用）<br>重なり部分は**加法合成**で計算し、R+G→#ffff00、R+B→#ff00ff、G+B→#00ffff、R+G+B→#ffffff になります。</p>
+    </div>
+  </div>
+</div>
+
+<script>
+// --- Constants ---
+const CANVAS_W = 930;
+const CANVAS_H = 630;
+const CIRCLE_R = 150; // 円の半径
+
+// --- utility ---
+function hexToRgb(hex){ const h=hex.replace('#',''); return {r:parseInt(h.substring(0,2),16), g:parseInt(h.substring(2,4),16), b:parseInt(h.substring(4,6),16)}; }
+function rgbToHex(r,g,b){ return '#'+[r,g,b].map(v=>Math.max(0,Math.min(255,Math.round(v))).toString(16).padStart(2,'0')).join(''); }
+function toWebSafeComponent(v){ const steps=[0,51,102,153,204,255]; let best=steps[0],bd=1e9; for(const s of steps){const d=Math.abs(v-s); if(d<bd){bd=d;best=s;}} return best; }
+function toWebSafeHex(r,g,b){ return '#'+[toWebSafeComponent(r),toWebSafeComponent(g),toWebSafeComponent(b)].map(x=>x.toString(16).padStart(2,'0')).join(''); }
+
+// --- elements ---
+const paletteColors = ['#ff0000','#00ff00','#0000ff','#ffff00','#ff00ff','#00ffff','#ffffff','#000000'];
+const palette = document.getElementById('palette');
+let activeColor = null;
+paletteColors.forEach(c=>{ const d=document.createElement('div'); d.className='swatch'; d.style.background=c; d.dataset.color=c; d.title=c; d.addEventListener('click', ()=>{ document.querySelectorAll('.swatch').forEach(s=>s.classList.remove('selected')); d.classList.add('selected'); setActiveColor(c); }); palette.appendChild(d); });
+const activeBox = document.getElementById('activeColorBox'); function setActiveColor(col){ activeColor = col; activeBox.style.background = col; }
+
+const bgSelect = document.getElementById('bgSelect'); const stage = document.getElementById('stage'); const svg = document.getElementById('svg'); const composite = document.getElementById('composite'); const ctx = composite.getContext('2d');
+const compositeModeNote = document.getElementById('compositeModeNote');
+
+bgSelect.addEventListener('change', ()=>{ 
+  const bgColor = bgSelect.value;
+  stage.style.background = bgColor;
+  
+  if(bgColor === '#000000') {
+    compositeModeNote.innerHTML = '現在の合成モード：**スクリーン**（Canvasでは加法合成<span style="font-style:italic">lighter</span>を使用）<br>重なり部分は**加法合成**で計算し、R+G→#ffff00、R+B→#ff00ff、G+B→#00ffff、R+G+B→#ffffff になります。';
+  } else if (bgColor === '#ffffff') {
+    compositeModeNote.innerHTML = '現在の合成モード：**乗算**（Canvasでは<span style="font-style:italic">multiply</span>を使用）<br>これはCMY減法混色に近い効果（白から色を引く）をもたらします。<br>※CMY色が塗られた場合、重なりはRGBが反映される（CMYの合成がCMYを構成するRGBの減法混色に対応する）';
+  }
+
+  drawComposite(); 
+}); 
+
+// 実行: 初期設定を反映
+bgSelect.value = '#000000'; // デフォルト黒背景
+bgSelect.dispatchEvent(new Event('change'));
+
+// --- circles (interactive handles) ---
+const circles = [document.getElementById('c1'), document.getElementById('c2'), document.getElementById('c3')];
+
+// SVG属性から初期位置を取得し、半径を定数(150)に設定
+const state = circles.map((c,i)=>({
+    el:c, 
+    color:null, 
+    cx:parseFloat(c.getAttribute('cx')), 
+    cy:parseFloat(c.getAttribute('cy')), 
+    r:CIRCLE_R // 半径を固定値150に
+})); 
+
+// pointer drag
+let dragging = null; let dragOffset = {x:0,y:0};
+function clientToSvg(x,y){ const pt = svg.createSVGPoint(); pt.x=x; pt.y=y; const inv = svg.getScreenCTM().inverse(); const sp = pt.matrixTransform(inv); return {x:sp.x,y:sp.y}; }
+
+state.forEach(s=>{
+  const el = s.el;
+  el.style.cursor='grab';
+  el.addEventListener('pointerdown', e=>{
+    e.preventDefault(); dragging = s; el.setPointerCapture(e.pointerId);
+    const pt = clientToSvg(e.clientX,e.clientY);
+    dragOffset.x = pt.x - s.cx; dragOffset.y = pt.y - s.cy;
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+  });
+  el.addEventListener('click', e=>{
+    if(eyeCheck.checked) return; // スポイトモード中はステージの色をサンプリング
+    if(!activeColor) return;
+    s.color = activeColor; 
+    // 色を塗った際にSVGの境界線(stroke)を削除し、視覚的なズレを解消
+    s.el.removeAttribute('stroke');
+    s.el.removeAttribute('stroke-width');
+    drawComposite();
+  });
+});
+
+function onPointerMove(e){ 
+  if(!dragging) return; 
+  const pt = clientToSvg(e.clientX,e.clientY); 
+  hideTooltip(); 
+
+  // 境界チェック
+  dragging.cx = Math.max(dragging.r, Math.min(CANVAS_W - dragging.r, pt.x - dragOffset.x));
+  dragging.cy = Math.max(dragging.r, Math.min(CANVAS_H - dragging.r, pt.y - dragOffset.y));
+  
+  // update element attributes
+  dragging.el.setAttribute('cx', dragging.cx); 
+  dragging.el.setAttribute('cy', dragging.cy);
+  drawComposite(); 
+}
+
+function onPointerUp(e){ 
+  if(!dragging) return; 
+  try{ dragging.el.releasePointerCapture(e.pointerId); }catch(e){} 
+  dragging = null; 
+  window.removeEventListener('pointermove', onPointerMove); 
+  window.removeEventListener('pointerup', onPointerUp); 
+}
+
+// --- Tooltip functions ---
+const tooltip = document.getElementById('tooltip');
+function showTooltipAtPoint(svgX, svgY, clientX, clientY){ 
+  // Canvasの境界内で座標を丸める
+  const x = Math.max(0, Math.min(CANVAS_W - 1, Math.round(svgX))); 
+  const y = Math.max(0, Math.min(CANVAS_H - 1, Math.round(svgY)));
+  
+  // 1x1ピクセルの色データを取得
+  const d = ctx.getImageData(x, y, 1, 1).data;
+  // ウェブセーフカラーに変換
+  const web = toWebSafeHex(d[0],d[1],d[2]); 
+  
+  // ツールチップの表示とコンテンツ設定
+  tooltip.style.display = 'block'; 
+  // 【修正点】ウェブセーフカラーを太字にして視認性を高める
+  tooltip.innerHTML = 'ウェブセーフ: <b>' + web + '</b> (rgb('+d[0]+','+d[1]+','+d[2]+'))'; 
+  // ツールチップの位置設定 (クライアント座標を使用)
+  tooltip.style.left = clientX + 'px'; 
+  tooltip.style.top = (clientY - 8) + 'px'; 
+}
+
+function hideTooltip(){ tooltip.style.display='none'; }
+
+// --- Stage Hover Tooltip ---
+stage.addEventListener('pointermove', ev => {
+  // 円のドラッグ中、またはスポイトモード中はツールチップを非表示
+  if (dragging || eyeCheck.checked) {
+    hideTooltip();
+    return;
+  }
+
+  // クライアント座標をSVG/Canvas座標に変換
+  const pt = clientToSvg(ev.clientX, ev.clientY);
+  
+  // Stage の範囲内でのみ表示
+  if (pt.x >= 0 && pt.x <= CANVAS_W && pt.y >= 0 && pt.y <= CANVAS_H) {
+    showTooltipAtPoint(pt.x, pt.y, ev.clientX, ev.clientY);
+  } else {
+    hideTooltip();
+  }
+});
+
+stage.addEventListener('pointerleave', hideTooltip);
+
+
+// --- Composite drawing: draw background then circles with additive/multiplicative blending ---
+function drawComposite(){
+  const bgColor = bgSelect.value;
+  composite.width = CANVAS_W; 
+  composite.height = CANVAS_H;
+  
+  // 1. 背景を描画 (source-over)
+  ctx.save(); 
+  ctx.globalCompositeOperation='source-over'; 
+  ctx.fillStyle = bgColor; 
+  ctx.fillRect(0,0,composite.width,composite.height);
+  
+  // 2. 合成モードを設定
+  if(bgColor === '#000000') {
+    // 黒背景: スクリーンモード (Canvasでは'lighter'で加法合成を実現)
+    ctx.globalCompositeOperation = 'lighter';
+  } else if (bgColor === '#ffffff') {
+    // 白背景: 乗算モード (Canvasでは'multiply'を使用)
+    ctx.globalCompositeOperation = 'multiply';
+  }
+  
+  // 3. 各円を描画
+  state.forEach(s=>{
+    if(!s.color) return;
+    const c = hexToRgb(s.color);
+    ctx.beginPath(); 
+    ctx.fillStyle = 'rgb('+c.r+','+c.g+','+c.b+')'; 
+    // Canvasに描画する円の半径は、SVGの r 属性値 (CIRCLE_R) と同じに設定
+    ctx.arc(s.cx, s.cy, s.r, 0, Math.PI*2); 
+    ctx.fill();
+  });
+  ctx.restore();
+}
+
+// --- EyeDropper sampling via checkbox ---
+const eyeCheck = document.getElementById('eyeCheck');
+stage.addEventListener('click', ev=>{
+  if(!eyeCheck.checked) return;
+  const pt = clientToSvg(ev.clientX, ev.clientY);
+  // 座標をCanvasの境界内で丸める
+  const x = Math.max(0, Math.min(CANVAS_W - 1, Math.round(pt.x))); 
+  const y = Math.max(0, Math.min(CANVAS_H - 1, Math.round(pt.y)));
+  
+  const d = ctx.getImageData(x,y,1,1).data; const hex = rgbToHex(d[0],d[1],d[2]); setActiveColor(hex);
+  document.querySelectorAll('.swatch').forEach(s=>s.classList.remove('selected'));
+});
+
+// 初期設定の反映
+// 選択色を赤に設定（初期パレットの最初の色）
+setActiveColor(paletteColors[0]); 
+document.querySelector('.swatch').classList.add('selected'); 
+
+// update composite when window resized or background changed (not strictly necessary here)
+window.addEventListener('resize', ()=>{ drawComposite(); });
+
+</script>
+</body>
+</html>
